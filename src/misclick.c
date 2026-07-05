@@ -417,7 +417,9 @@ struct misclick_t *misclick_add(const struct misclick_params_t *params)
 
 void misclick_handle_input_event(struct misclick_t *button, uint8_t sample, int64_t cur_time)
 {
-  button->state_tick = sample != button->state ? cur_time + misclick_config.debounce_time_us : INT64_MAX;
+  int64_t db = button->params.debounce_time_us;
+  int64_t debounce = db > 0 ? db : (db < 0 ? 0 : misclick_config.debounce_time_us);
+  button->state_tick = sample != button->state ? cur_time + debounce : INT64_MAX;
   misclick_reschedule_state_timer(cur_time);
 }
 
