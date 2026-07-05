@@ -41,6 +41,12 @@ struct misclick_params_t {
   void *callback_arg;
   misclick_click_callback_t click_callback;
   misclick_press_callback_t press_callback;
+  /* Per-button debounce override. 0 (the default / zero-init) inherits the
+   * global debounce_time_us; a positive value sets this button's own debounce
+   * time; a NEGATIVE value disables debounce (0) — e.g. for inputs already
+   * debounced in hardware (the nPM1304 GPIO / SHPHLD buttons). Backward
+   * compatible: 0 keeps the old global behaviour. */
+  int64_t debounce_time_us;
 };
 
 struct misclick_config_t {
