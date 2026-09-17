@@ -6,7 +6,7 @@ A lightweight C library for microcontroller button input debouncing and advanced
 
 - **Hardware debouncing** - Filters out electrical noise from button presses
 - **Multiple click patterns** - Detects single, double, triple clicks
-- **Long press support** - Recognizes long presses, long multi-clicks and clicks ending with a long press
+- **Long press support** - Recognizes long presses, long multi-clicks and clicks ending with a long or very long press
 - **Configurable timing** - Customizable debounce, press, and cooldown intervals
 - **Callback-based** - Non-blocking event-driven architecture
 - **Memory efficient** - Low memory footprint
@@ -22,6 +22,7 @@ is complete, as an `enum misclick_click_t` value:
 | Single, double, triple click | `MISCLICK_CLICK_SINGLE`, `_DOUBLE`, `_TRIPLE` |
 | Long press, optionally followed by one or two clicks | `MISCLICK_CLICK_LONG`, `_LONG_DOUBLE`, `_LONG_TRIPLE` |
 | One or two clicks followed by a long press | `MISCLICK_CLICK_SINGLE_LONG`, `_DOUBLE_LONG` |
+| Zero to two clicks followed by a very long press | `MISCLICK_CLICK_VERY_LONG`, `_SINGLE_VERY_LONG`, `_DOUBLE_VERY_LONG` |
 | More than three presses | `MISCLICK_CLICK_CANCELLED` |
 
 A click value is composed of bit fields, so callbacks can also inspect a
@@ -31,14 +32,15 @@ gesture by parts instead of matching whole values:
 |---|---|---|
 | bits 0-1 | `MISCLICK_CLICK_COUNT_MASK` | Number of presses (1..3) |
 | bit 2 | `MISCLICK_CLICK_LONG_FIRST` | The first press was long |
-| bits 3-4 | `MISCLICK_CLICK_END_MASK` | How it ended: `MISCLICK_CLICK_END_RELEASE`, `_END_LONG` |
+| bits 3-4 | `MISCLICK_CLICK_END_MASK` | How it ended: `MISCLICK_CLICK_END_RELEASE`, `_END_LONG`, `_END_VERY_LONG` |
 
-A press held for `long_press_time_us` is long. A long *first* press does not
-end the gesture, since more clicks may follow; any later long press ends it.
-Gestures are always reported once the button is released (`_END_LONG`); the
-press event `MISCLICK_LONG_PRESS_START` gives early notice while it is still
-held. Set `final_press_time_us` to report held gestures before the release
-instead.
+A press held for `long_press_time_us` is long, and one held for
+`very_long_press_time_us` is very long. A long *first* press does not end the
+gesture, since more clicks may follow; any later long press and any very long
+press ends it. Gestures are always reported once the button is released
+(`_END_LONG`, `_END_VERY_LONG`); the press events `MISCLICK_LONG_PRESS_START`
+and `MISCLICK_VERY_LONG_PRESS_START` give early notice while it is still held.
+Set `final_press_time_us` to report held gestures before the release instead.
 
 ## Usage
 
@@ -129,13 +131,16 @@ static void button_click_callback(void *callback_arg, int button_id,
         case MISCLICK_CLICK_SINGLE_LONG:
             printk("Click then long press detected\\n");
             break;
+        case MISCLICK_CLICK_VERY_LONG:
+            printk("Very long press detected\\n");
+            break;
         case MISCLICK_CLICK_CANCELLED:
             printk("Click sequence cancelled\\n");
             break;
         default:
             // Or inspect the gesture by parts
-            if ((click & MISCLICK_CLICK_END_MASK) == MISCLICK_CLICK_END_LONG) {
-                printk("%d press(es) ending with a long press\\n", click & MISCLICK_CLICK_COUNT_MASK);
+            if ((click & MISCLICK_CLICK_END_MASK) == MISCLICK_CLICK_END_VERY_LONG) {
+                printk("%d press(es) ending with a very long press\\n", click & MISCLICK_CLICK_COUNT_MASK);
             }
             break;
     }
@@ -171,6 +176,7 @@ static void init_buttons(void) {
         .next_press_time_us = DEFAULT_MISCLICK_NEXT_PRESS_TIME_US,
         .final_press_time_us = DEFAULT_MISCLICK_FINAL_PRESS_TIME_US, // <0 reports held gestures on release
         .cooldown_time_us = DEFAULT_MISCLICK_COOLDOWN_TIME_US,
+        .very_long_press_time_us = DEFAULT_MISCLICK_VERY_LONG_PRESS_TIME_US, // 0 disables
     };
     misclick_init(&config);
 
@@ -245,10 +251,12 @@ int main(void) {
 #define DEFAULT_MISCLICK_NEXT_PRESS_TIME_US   500000   // 500ms between clicks
 #define DEFAULT_MISCLICK_FINAL_PRESS_TIME_US  500000   // report held gestures 500ms early; <0 waits for release
 #define DEFAULT_MISCLICK_COOLDOWN_TIME_US    1000000   // 1s cooldown after complex patterns
+#define DEFAULT_MISCLICK_VERY_LONG_PRESS_TIME_US 3000000 // 3s for a very long press
 ```
 
 - `long_press_time_us` - hold time for a press to count as long, in any position of the gesture
-- `final_press_time_us` - once a held press can no longer change the gesture (it is long), report the gesture without waiting for the release: at once (0) or after this much more hold (> 0); negative waits for the release
+- `very_long_press_time_us` - hold time, from the start of the press, for a very long press; must exceed `long_press_time_us`; 0 disables very long presses (a very long press is then the same as a long press)
+- `final_press_time_us` - once a held press can no longer change the gesture (long, or very long when enabled), report the gesture without waiting for the release: at once (0) or after this much more hold (> 0); negative waits for the release
 - `next_press_time_us` - maximum gap between a release and the next press of the same gesture
 - `cooldown_time_us` - presses are ignored for this long after a gesture
 
@@ -283,7 +291,7 @@ void my_stop_timer(void *handle) {
 ## Memory Usage
 
 - Per button: 64 bytes (32-bit target)
-- Global state: 60 bytes (32-bit target)
+- Global state: 68 bytes (32-bit target)
 - No dynamic allocation after initialization
 
 ## Tests

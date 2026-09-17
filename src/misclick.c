@@ -11,6 +11,7 @@ enum misclick_phase_t {
   MISCLICK_PHASE_NONE,             // idle
   MISCLICK_PHASE_PRESSED,          // a press is in progress
   MISCLICK_PHASE_PRESSED_LONG,     // a press is in progress and became long
+  MISCLICK_PHASE_PRESSED_VERY_LONG, // a press is in progress and became very long
   MISCLICK_PHASE_WAIT,             // released, waiting for the next press
   MISCLICK_PHASE_COOLDOWN,
   MISCLICK_PHASE_COOLDOWN_PRESSED,
@@ -122,9 +123,14 @@ static void misclick_state_changed(struct misclick_t *button, int64_t cur_time)
       break;
     case MISCLICK_PHASE_PRESSED:
     case MISCLICK_PHASE_PRESSED_LONG:
+    case MISCLICK_PHASE_PRESSED_VERY_LONG:
       // button release = wait for more, unless the press ended the gesture
       assert(button->state);
       misclick_pressed(button, MISCLICK_UP, cur_time);
+      if (button->phase == MISCLICK_PHASE_PRESSED_VERY_LONG) {
+        misclick_end(button, misclick_gesture(button) | MISCLICK_CLICK_END_VERY_LONG, cur_time);
+        break;
+      }
       if (button->phase == MISCLICK_PHASE_PRESSED_LONG && button->count > 1) {
         misclick_end(button, misclick_gesture(button) | MISCLICK_CLICK_END_LONG, cur_time);
         break;
@@ -205,17 +211,29 @@ void misclick_handle_click_timeout(int64_t cur_time)
           misclick_pressed(button, MISCLICK_COOLDOWN_PRESSED_COMPLETE, cur_time);
           break;
         case MISCLICK_PHASE_PRESSED:
-          // the press is long
+          // the press is long; it may still become very long
           button->phase = MISCLICK_PHASE_PRESSED_LONG;
           if (button->count == 1) {
             button->long_first = 1;
           }
-          button->click_tick = misclick_final_tick(cur_time);
+          button->click_tick = misclick_config.very_long_press_time_us
+            ? button->press_ts + misclick_config.very_long_press_time_us
+            : misclick_final_tick(cur_time);
           misclick_pressed(button, MISCLICK_LONG_PRESS_START, cur_time);
           break;
         case MISCLICK_PHASE_PRESSED_LONG:
+          if (misclick_config.very_long_press_time_us) {
+            // the press is very long
+            button->phase = MISCLICK_PHASE_PRESSED_VERY_LONG;
+            button->click_tick = misclick_final_tick(cur_time);
+            misclick_pressed(button, MISCLICK_VERY_LONG_PRESS_START, cur_time);
+            break;
+          }
           // the final press is held: report the gesture before the release
           misclick_end(button, misclick_gesture(button) | MISCLICK_CLICK_END_LONG, cur_time);
+          break;
+        case MISCLICK_PHASE_PRESSED_VERY_LONG:
+          misclick_end(button, misclick_gesture(button) | MISCLICK_CLICK_END_VERY_LONG, cur_time);
           break;
         case MISCLICK_PHASE_WAIT:
           misclick_end(button, misclick_gesture(button), cur_time);
