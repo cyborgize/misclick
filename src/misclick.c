@@ -85,6 +85,14 @@ static void misclick_end(struct misclick_t *button, enum misclick_click_t click,
   }
 }
 
+// When a held press can no longer change the gesture: the tick to report
+// the gesture without waiting for the release, if configured.
+static int64_t misclick_final_tick(int64_t cur_time)
+{
+  int64_t final = misclick_config.final_press_time_us;
+  return final < 0 ? INT64_MAX : cur_time + final;
+}
+
 // The gesture so far, as a click value.
 static enum misclick_click_t misclick_gesture(struct misclick_t *button)
 {
@@ -97,7 +105,7 @@ static void misclick_press(struct misclick_t *button, int64_t cur_time)
   button->count++;
   button->phase = MISCLICK_PHASE_PRESSED;
   button->press_ts = cur_time;
-  button->click_tick = cur_time + (button->count == 1 ? misclick_config.long_press_time_us : misclick_config.final_press_time_us);
+  button->click_tick = cur_time + misclick_config.long_press_time_us;
 }
 
 // The debounced button state has changed.
@@ -114,9 +122,13 @@ static void misclick_state_changed(struct misclick_t *button, int64_t cur_time)
       break;
     case MISCLICK_PHASE_PRESSED:
     case MISCLICK_PHASE_PRESSED_LONG:
-      // button release = wait for more
+      // button release = wait for more, unless the press ended the gesture
       assert(button->state);
       misclick_pressed(button, MISCLICK_UP, cur_time);
+      if (button->phase == MISCLICK_PHASE_PRESSED_LONG && button->count > 1) {
+        misclick_end(button, misclick_gesture(button) | MISCLICK_CLICK_END_LONG, cur_time);
+        break;
+      }
       int32_t dur = cur_time - button->press_ts;
       if (button->count == 1) {
         button->first_dur = dur;
@@ -193,19 +205,17 @@ void misclick_handle_click_timeout(int64_t cur_time)
           misclick_pressed(button, MISCLICK_COOLDOWN_PRESSED_COMPLETE, cur_time);
           break;
         case MISCLICK_PHASE_PRESSED:
+          // the press is long
+          button->phase = MISCLICK_PHASE_PRESSED_LONG;
           if (button->count == 1) {
-            // the first press is long: the gesture may go on
-            button->phase = MISCLICK_PHASE_PRESSED_LONG;
             button->long_first = 1;
-            button->click_tick = cur_time + misclick_config.final_press_time_us;
-            misclick_pressed(button, MISCLICK_LONG_PRESS_START, cur_time);
-            break;
           }
-          // a later press held long enough ends the gesture
-          // fallthrough
+          button->click_tick = misclick_final_tick(cur_time);
+          misclick_pressed(button, MISCLICK_LONG_PRESS_START, cur_time);
+          break;
         case MISCLICK_PHASE_PRESSED_LONG:
-          misclick_pressed(button, MISCLICK_FINAL_PRESS, cur_time);
-          misclick_end(button, misclick_gesture(button), cur_time);
+          // the final press is held: report the gesture before the release
+          misclick_end(button, misclick_gesture(button) | MISCLICK_CLICK_END_LONG, cur_time);
           break;
         case MISCLICK_PHASE_WAIT:
           misclick_end(button, misclick_gesture(button), cur_time);

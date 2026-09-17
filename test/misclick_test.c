@@ -25,7 +25,7 @@ static void emit(const char *what) {
 static const char *press_name(enum misclick_press_t p) {
   static const char *names[] = {
     "DOWN_START", "DOWN", "UP", "IGNORE_UP", "IGNORE_COMPLETE", "COOLDOWN_DOWN", "COOLDOWN_UP",
-    "COOLDOWN_COMPLETE", "COOLDOWN_PRESSED_COMPLETE", "LONG_PRESS_START", "FINAL_PRESS",
+    "COOLDOWN_COMPLETE", "COOLDOWN_PRESSED_COMPLETE", "LONG_PRESS_START",
   };
   return names[p];
 }
@@ -33,6 +33,9 @@ static const char *press_name(enum misclick_press_t p) {
 static void click_name(enum misclick_click_t c, char *buf) {
   static const char *base[] = {"CANCELLED", "SINGLE", "DOUBLE", "TRIPLE", "?", "LONG", "LONG_DOUBLE", "LONG_TRIPLE"};
   strcpy(buf, base[c & (MISCLICK_CLICK_COUNT_MASK | MISCLICK_CLICK_LONG_FIRST)]);
+  switch (c & MISCLICK_CLICK_END_MASK) {
+    case MISCLICK_CLICK_END_LONG: strcat(buf, "+END_LONG"); break;
+  }
 }
 
 static void on_click(void *arg, int button, enum misclick_click_t click, int64_t ts) {
@@ -48,6 +51,7 @@ static void on_press(void *arg, int button, enum misclick_press_t press, int64_t
 struct scenario {
   const char *name;
   int64_t debounce_us;     /* per-button override: 0 = global, <0 = none */
+  int64_t final_us;        /* final_press_time_us: <0 waits for release */
   const char *input;
   const char *expect;
 };
@@ -77,8 +81,8 @@ static int run(const struct scenario *sc) {
     .debounce_time_us = DEFAULT_MISCLICK_DEBOUNCE_TIME_US,
     .long_press_time_us = DEFAULT_MISCLICK_LONG_PRESS_TIME_US,
     .next_press_time_us = DEFAULT_MISCLICK_NEXT_PRESS_TIME_US,
-    .final_press_time_us = DEFAULT_MISCLICK_FINAL_PRESS_TIME_US,
     .cooldown_time_us = DEFAULT_MISCLICK_COOLDOWN_TIME_US,
+    .final_press_time_us = sc->final_us,
   };
   state_timer.deadline = click_timer.deadline = INT64_MAX;
   now = 0;
@@ -114,34 +118,49 @@ static int run(const struct scenario *sc) {
 }
 
 static const struct scenario scenarios[] = {
-  {"single click", -1, "100",
+  {"single click", -1, -1, "100",
    "0 DOWN_START;100 UP;600 SINGLE;1600 COOLDOWN_COMPLETE"},
-  {"double click", -1, "100 200 100",
+  {"double click", -1, -1, "100 200 100",
    "0 DOWN_START;100 UP;300 DOWN;400 UP;900 DOUBLE;1900 COOLDOWN_COMPLETE"},
-  {"triple click", -1, "100 200 100 200 100",
+  {"triple click", -1, -1, "100 200 100 200 100",
    "0 DOWN_START;100 UP;300 DOWN;400 UP;600 DOWN;700 UP;1200 TRIPLE;2200 COOLDOWN_COMPLETE"},
-  {"four clicks cancel", -1, "100 200 100 200 100 200 100",
+  {"four clicks cancel", -1, -1, "100 200 100 200 100 200 100",
    "0 DOWN_START;100 UP;300 DOWN;400 UP;600 DOWN;700 UP;900 DOWN;900 CANCELLED;1000 COOLDOWN_UP;1900 COOLDOWN_COMPLETE"},
-  {"long press released", -1, "800",
+  {"long press released", -1, -1, "800",
    "0 DOWN_START;600 LONG_PRESS_START;800 UP;1300 LONG;2300 COOLDOWN_COMPLETE"},
-  {"long press held", -1, "2000",
-   "0 DOWN_START;600 LONG_PRESS_START;1100 FINAL_PRESS;1100 LONG;2000 COOLDOWN_UP;2100 COOLDOWN_COMPLETE"},
-  {"long press held through cooldown", -1, "3000",
-   "0 DOWN_START;600 LONG_PRESS_START;1100 FINAL_PRESS;1100 LONG;2100 COOLDOWN_PRESSED_COMPLETE;3000 IGNORE_UP"},
-  {"long double click", -1, "800 200 100",
+  {"long press held", -1, -1, "2000",
+   "0 DOWN_START;600 LONG_PRESS_START;2000 UP;2500 LONG;3500 COOLDOWN_COMPLETE"},
+  {"press held through cooldown", -1, -1, "100 700 2000",
+   "0 DOWN_START;100 UP;600 SINGLE;800 COOLDOWN_DOWN;1600 COOLDOWN_PRESSED_COMPLETE;2800 IGNORE_UP"},
+  {"long double click", -1, -1, "800 200 100",
    "0 DOWN_START;600 LONG_PRESS_START;800 UP;1000 DOWN;1100 UP;1600 LONG_DOUBLE;2600 COOLDOWN_COMPLETE"},
-  {"long triple click", -1, "800 200 100 200 100",
+  {"long triple click", -1, -1, "800 200 100 200 100",
    "0 DOWN_START;600 LONG_PRESS_START;800 UP;1000 DOWN;1100 UP;1300 DOWN;1400 UP;1900 LONG_TRIPLE;2900 COOLDOWN_COMPLETE"},
-  {"relatively long first press", -1, "300 200 100",
+  {"relatively long first press", -1, -1, "300 200 100",
    "0 DOWN_START;300 UP;500 DOWN;600 UP;1100 LONG_DOUBLE;2100 COOLDOWN_COMPLETE"},
-  {"press during cooldown", -1, "100 700 100",
+  {"press during cooldown", -1, -1, "100 700 100",
    "0 DOWN_START;100 UP;600 SINGLE;800 COOLDOWN_DOWN;900 COOLDOWN_UP;1600 COOLDOWN_COMPLETE"},
-  {"debounce", 40000, "100 20 100",
+  {"debounce", 40000, -1, "100 20 100",
    "40 DOWN_START;260 UP;760 SINGLE;1760 COOLDOWN_COMPLETE"},
-  {"click then hold", -1, "100 200 2000",
-   "0 DOWN_START;100 UP;300 DOWN;800 FINAL_PRESS;800 DOUBLE;1800 COOLDOWN_PRESSED_COMPLETE;2300 IGNORE_UP"},
-  {"long click then hold", -1, "800 200 2000",
-   "0 DOWN_START;600 LONG_PRESS_START;800 UP;1000 DOWN;1500 FINAL_PRESS;1500 LONG_DOUBLE;2500 COOLDOWN_PRESSED_COMPLETE;3000 IGNORE_UP"},
+  {"click then hold", -1, -1, "100 200 2000",
+   "0 DOWN_START;100 UP;300 DOWN;900 LONG_PRESS_START;2300 UP;2300 DOUBLE+END_LONG;3300 COOLDOWN_COMPLETE"},
+  {"double click then hold", -1, -1, "100 200 100 200 2000",
+   "0 DOWN_START;100 UP;300 DOWN;400 UP;600 DOWN;1200 LONG_PRESS_START;2600 UP;2600 TRIPLE+END_LONG;3600 COOLDOWN_COMPLETE"},
+  {"click then medium press", -1, -1, "100 200 550",
+   "0 DOWN_START;100 UP;300 DOWN;850 UP;1350 DOUBLE;2350 COOLDOWN_COMPLETE"},
+  {"long click then hold", -1, -1, "800 200 2000",
+   "0 DOWN_START;600 LONG_PRESS_START;800 UP;1000 DOWN;1600 LONG_PRESS_START;3000 UP;3000 LONG_DOUBLE+END_LONG;4000 COOLDOWN_COMPLETE"},
+  /* early report of held gestures */
+  {"long press held, early", -1, 500000, "2000",
+   "0 DOWN_START;600 LONG_PRESS_START;1100 LONG+END_LONG;2000 COOLDOWN_UP;2100 COOLDOWN_COMPLETE"},
+  {"long press held through cooldown, early", -1, 500000, "3000",
+   "0 DOWN_START;600 LONG_PRESS_START;1100 LONG+END_LONG;2100 COOLDOWN_PRESSED_COMPLETE;3000 IGNORE_UP"},
+  {"click then hold, early", -1, 500000, "100 200 2000",
+   "0 DOWN_START;100 UP;300 DOWN;900 LONG_PRESS_START;1400 DOUBLE+END_LONG;2300 COOLDOWN_UP;2400 COOLDOWN_COMPLETE"},
+  {"click then hold, at once", -1, 0, "100 200 2000",
+   "0 DOWN_START;100 UP;300 DOWN;900 LONG_PRESS_START;900 DOUBLE+END_LONG;1900 COOLDOWN_PRESSED_COMPLETE;2300 IGNORE_UP"},
+  {"long press released before early report", -1, 500000, "800",
+   "0 DOWN_START;600 LONG_PRESS_START;800 UP;1300 LONG;2300 COOLDOWN_COMPLETE"},
 };
 
 int main(void) {
