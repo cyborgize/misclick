@@ -5,40 +5,28 @@
 
 #include "misclick/misclick.h"
 
-#define TAG "misclick"
-
 static struct misclick_config_t misclick_config;
 
-enum misclick_click_state_t {
-  MISCLICK_CLICK_STATE_NONE,
-  MISCLICK_CLICK_STATE_COOLDOWN,
-  MISCLICK_CLICK_STATE_COOLDOWN_PRESSED,
-  MISCLICK_CLICK_STATE_SHORT_CIRCUIT,
-  MISCLICK_CLICK_STATE_SINGLE,
-  MISCLICK_CLICK_STATE_SINGLE_WAIT,
-  MISCLICK_CLICK_STATE_DOUBLE,
-  MISCLICK_CLICK_STATE_DOUBLE_WAIT,
-  MISCLICK_CLICK_STATE_TRIPLE,
-  MISCLICK_CLICK_STATE_TRIPLE_WAIT,
-  MISCLICK_CLICK_STATE_LONG,
-  MISCLICK_CLICK_STATE_LONG_WAIT,
-  MISCLICK_CLICK_STATE_LONG_DOUBLE,
-  MISCLICK_CLICK_STATE_LONG_DOUBLE_WAIT,
-  MISCLICK_CLICK_STATE_LONG_TRIPLE,
-  MISCLICK_CLICK_STATE_LONG_TRIPLE_WAIT,
+enum misclick_phase_t {
+  MISCLICK_PHASE_NONE,             // idle
+  MISCLICK_PHASE_PRESSED,          // a press is in progress
+  MISCLICK_PHASE_PRESSED_LONG,     // a press is in progress and became long
+  MISCLICK_PHASE_WAIT,             // released, waiting for the next press
+  MISCLICK_PHASE_COOLDOWN,
+  MISCLICK_PHASE_COOLDOWN_PRESSED,
+  MISCLICK_PHASE_SHORT_CIRCUIT,
 };
 
 struct misclick_t {
   struct misclick_params_t params;
   uint8_t state : 1;
-  enum misclick_click_state_t click;
+  uint8_t phase : 3;
+  uint8_t count : 2;               // presses so far in the current gesture
+  uint8_t long_first : 1;          // the first press of the gesture was long
   int64_t state_tick;
   int64_t click_tick;
-  union {
-    int64_t first_click_ts;
-    int32_t first_click_dur;
-  };
-  int64_t second_click_ts;
+  int64_t press_ts;                // start of the current press
+  int32_t first_dur;               // duration of the first press
   struct misclick_t *next;
 };
 
@@ -80,19 +68,96 @@ static void misclick_reschedule_click_timer(uint64_t cur_time)
   misclick_reschedule_timer(misclick_config.click_timer_handle, &get_click_tick, cur_time);
 }
 
-static void misclick_clicked(struct misclick_t *button, enum misclick_click_t click, int64_t timestamp) {
-  if (button->params.click_callback) {
-    button->params.click_callback(button->params.callback_arg, button->params.button_id, click, timestamp);
-  }
-}
-
-static void misclick_pressed(struct misclick_t *button, enum misclick_press_t press, int64_t timestamp) {
+static void misclick_pressed(struct misclick_t *button, enum misclick_press_t press, int64_t timestamp)
+{
   if (button->params.press_callback) {
     button->params.press_callback(button->params.callback_arg, button->params.button_id, press, timestamp);
   }
 }
 
-static void misclick_state_changed(struct misclick_t *button, int64_t cur_time);
+// The gesture ends: report it and enter cooldown (pressed or not).
+static void misclick_end(struct misclick_t *button, enum misclick_click_t click, int64_t cur_time)
+{
+  button->phase = button->state ? MISCLICK_PHASE_COOLDOWN : MISCLICK_PHASE_COOLDOWN_PRESSED;
+  button->click_tick = cur_time + misclick_config.cooldown_time_us;
+  if (button->params.click_callback) {
+    button->params.click_callback(button->params.callback_arg, button->params.button_id, click, cur_time);
+  }
+}
+
+// The gesture so far, as a click value.
+static enum misclick_click_t misclick_gesture(struct misclick_t *button)
+{
+  return (button->long_first ? MISCLICK_CLICK_LONG_FIRST : 0) | button->count;
+}
+
+// A new press of the gesture starts.
+static void misclick_press(struct misclick_t *button, int64_t cur_time)
+{
+  button->count++;
+  button->phase = MISCLICK_PHASE_PRESSED;
+  button->press_ts = cur_time;
+  button->click_tick = cur_time + (button->count == 1 ? misclick_config.long_press_time_us : misclick_config.final_press_time_us);
+}
+
+// The debounced button state has changed.
+static void misclick_state_changed(struct misclick_t *button, int64_t cur_time)
+{
+  switch (button->phase) {
+    case MISCLICK_PHASE_NONE:
+      // button press = gesture start
+      assert(!button->state);
+      misclick_pressed(button, MISCLICK_DOWN_START, cur_time);
+      button->count = 0;
+      button->long_first = 0;
+      misclick_press(button, cur_time);
+      break;
+    case MISCLICK_PHASE_PRESSED:
+    case MISCLICK_PHASE_PRESSED_LONG:
+      // button release = wait for more
+      assert(button->state);
+      misclick_pressed(button, MISCLICK_UP, cur_time);
+      int32_t dur = cur_time - button->press_ts;
+      if (button->count == 1) {
+        button->first_dur = dur;
+      } else if (button->count == 2 && dur <= button->first_dur / 2) {
+        // a second press much shorter than the first: treat the first as long
+        button->long_first = 1;
+      }
+      button->phase = MISCLICK_PHASE_WAIT;
+      button->click_tick = cur_time + misclick_config.next_press_time_us;
+      break;
+    case MISCLICK_PHASE_WAIT:
+      // button press = next press of the gesture, or too many presses
+      assert(!button->state);
+      misclick_pressed(button, MISCLICK_DOWN, cur_time);
+      if (button->count == 3) {
+        misclick_end(button, MISCLICK_CLICK_CANCELLED, cur_time);
+      } else {
+        misclick_press(button, cur_time);
+      }
+      break;
+    case MISCLICK_PHASE_COOLDOWN:
+      // button press = ignore
+      assert(!button->state);
+      misclick_pressed(button, MISCLICK_COOLDOWN_DOWN, cur_time);
+      button->phase = MISCLICK_PHASE_COOLDOWN_PRESSED;
+      break;
+    case MISCLICK_PHASE_COOLDOWN_PRESSED:
+      // button release = ignore
+      assert(button->state);
+      misclick_pressed(button, MISCLICK_COOLDOWN_UP, cur_time);
+      button->phase = MISCLICK_PHASE_COOLDOWN;
+      break;
+    case MISCLICK_PHASE_SHORT_CIRCUIT:
+      // button release = reset
+      assert(button->state);
+      misclick_pressed(button, MISCLICK_IGNORE_UP, cur_time);
+      button->phase = MISCLICK_PHASE_NONE;
+      button->click_tick = INT64_MAX;
+      break;
+  }
+}
 
 void misclick_handle_state_timeout(int64_t cur_time)
 {
@@ -107,283 +172,43 @@ void misclick_handle_state_timeout(int64_t cur_time)
   misclick_reschedule_click_timer(cur_time);
 }
 
-static void misclick_state_changed(struct misclick_t *button, int64_t cur_time) {
-  switch (button->click) {
-    case MISCLICK_CLICK_STATE_COOLDOWN:
-      misclick_pressed(button, MISCLICK_COOLDOWN_DOWN, cur_time);
-      break;
-    case MISCLICK_CLICK_STATE_COOLDOWN_PRESSED:
-      misclick_pressed(button, MISCLICK_COOLDOWN_UP, cur_time);
-      break;
-    case MISCLICK_CLICK_STATE_SHORT_CIRCUIT:
-      misclick_pressed(button, MISCLICK_IGNORE_UP, cur_time);
-      break;
-    case MISCLICK_CLICK_STATE_NONE:
-      misclick_pressed(button, MISCLICK_DOWN_START, cur_time);
-      break;
-    default:
-      misclick_pressed(button, button->state ? MISCLICK_UP : MISCLICK_DOWN, cur_time);
-      break;
-  }
-  switch (button->click) {
-    case MISCLICK_CLICK_STATE_NONE:
-      if (!button->state) {
-        // button press = single click start
-        button->click = MISCLICK_CLICK_STATE_SINGLE;
-        button->click_tick = cur_time + misclick_config.long_press_time_us;
-        button->first_click_ts = cur_time;
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-    case MISCLICK_CLICK_STATE_COOLDOWN:
-      if (!button->state) {
-        // button press = ignore
-        button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-        // button->click_tick = INT64_MAX;
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-    case MISCLICK_CLICK_STATE_COOLDOWN_PRESSED:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = ignore
-        button->click = MISCLICK_CLICK_STATE_COOLDOWN;
-        // button->click_tick = INT64_MAX;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_SHORT_CIRCUIT:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = reset
-        button->click = MISCLICK_CLICK_STATE_NONE;
-        button->click_tick = INT64_MAX;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_SINGLE:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = single click, wait for more
-        button->click = MISCLICK_CLICK_STATE_SINGLE_WAIT;
-        button->click_tick = cur_time + misclick_config.next_press_time_us;
-        button->first_click_dur = cur_time - button->first_click_ts;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_SINGLE_WAIT:
-      if (!button->state) {
-        // button press = double click start
-        button->click = MISCLICK_CLICK_STATE_DOUBLE;
-        button->click_tick = cur_time + misclick_config.final_press_time_us;
-        button->second_click_ts = cur_time;
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-    case MISCLICK_CLICK_STATE_DOUBLE:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = double click, wait for more
-        int32_t second_click_dur = cur_time - button->second_click_ts;
-        if (second_click_dur <= button->first_click_dur / 2) {
-          button->click = MISCLICK_CLICK_STATE_LONG_DOUBLE_WAIT;
-        } else {
-          button->click = MISCLICK_CLICK_STATE_DOUBLE_WAIT;
-        }
-        button->click_tick = cur_time + misclick_config.next_press_time_us;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_DOUBLE_WAIT:
-      if (!button->state) {
-        // button press = triple click start
-        button->click = MISCLICK_CLICK_STATE_TRIPLE;
-        button->click_tick = cur_time + misclick_config.final_press_time_us;
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-    case MISCLICK_CLICK_STATE_TRIPLE:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = triple click, wait for more
-        button->click = MISCLICK_CLICK_STATE_TRIPLE_WAIT;
-        button->click_tick = cur_time + misclick_config.next_press_time_us;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_TRIPLE_WAIT:
-      if (!button->state) {
-        // button press = more than three clicks = reset
-        button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-        button->click_tick = cur_time + misclick_config.cooldown_time_us;
-        misclick_clicked(button, MISCLICK_CLICK_CANCELLED, cur_time);
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-    case MISCLICK_CLICK_STATE_LONG:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = long click, wait for more
-        button->click = MISCLICK_CLICK_STATE_LONG_WAIT;
-        button->click_tick = cur_time + misclick_config.next_press_time_us;
-        // doesn't matter anymore since the first click is definitely long
-        // button->first_click_dur = cur_time - button->first_click_ts;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_LONG_WAIT:
-      if (!button->state) {
-        // button press = long double click start
-        button->click = MISCLICK_CLICK_STATE_LONG_DOUBLE;
-        button->click_tick = cur_time + misclick_config.final_press_time_us;
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-    case MISCLICK_CLICK_STATE_LONG_DOUBLE:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = long double click, wait for more
-        button->click = MISCLICK_CLICK_STATE_LONG_DOUBLE_WAIT;
-        button->click_tick = cur_time + misclick_config.next_press_time_us;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_LONG_DOUBLE_WAIT:
-      if (!button->state) {
-        // button press = long triple click start
-        button->click = MISCLICK_CLICK_STATE_LONG_TRIPLE;
-        button->click_tick = cur_time + misclick_config.final_press_time_us;
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-    case MISCLICK_CLICK_STATE_LONG_TRIPLE:
-      if (!button->state) {
-        // button press = impossible
-        assert(false);
-      } else {
-        // button release = long triple click, wait for more
-        button->click = MISCLICK_CLICK_STATE_LONG_TRIPLE_WAIT;
-        button->click_tick = cur_time + misclick_config.next_press_time_us;
-      }
-      break;
-    case MISCLICK_CLICK_STATE_LONG_TRIPLE_WAIT:
-      if (!button->state) {
-        // button press = more than three click = reset
-        button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-        button->click_tick = cur_time + misclick_config.cooldown_time_us;
-        misclick_clicked(button, MISCLICK_CLICK_CANCELLED, cur_time);
-      } else {
-        // button release = impossible
-        assert(false);
-      }
-      break;
-  }
-}
-
 void misclick_handle_click_timeout(int64_t cur_time)
 {
   for (struct misclick_t *button = misclick_head; button != NULL; button = button->next) {
     if (button->click_tick <= cur_time) {
-      switch (button->click) {
-        case MISCLICK_CLICK_STATE_NONE:
-        case MISCLICK_CLICK_STATE_SHORT_CIRCUIT:
+      switch (button->phase) {
+        case MISCLICK_PHASE_NONE:
+        case MISCLICK_PHASE_SHORT_CIRCUIT:
           // impossible
           assert(false);
-        case MISCLICK_CLICK_STATE_COOLDOWN:
-          button->click = MISCLICK_CLICK_STATE_NONE;
+          break;
+        case MISCLICK_PHASE_COOLDOWN:
+          button->phase = MISCLICK_PHASE_NONE;
           button->click_tick = INT64_MAX;
           misclick_pressed(button, MISCLICK_COOLDOWN_COMPLETE, cur_time);
           break;
-        case MISCLICK_CLICK_STATE_COOLDOWN_PRESSED:
-          button->click = MISCLICK_CLICK_STATE_SHORT_CIRCUIT;
+        case MISCLICK_PHASE_COOLDOWN_PRESSED:
+          button->phase = MISCLICK_PHASE_SHORT_CIRCUIT;
           button->click_tick = INT64_MAX;
           misclick_pressed(button, MISCLICK_COOLDOWN_PRESSED_COMPLETE, cur_time);
           break;
-        case MISCLICK_CLICK_STATE_SINGLE:
-          button->click = MISCLICK_CLICK_STATE_LONG;
-          button->click_tick = cur_time + misclick_config.final_press_time_us;
-          misclick_pressed(button, MISCLICK_LONG_PRESS_START, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_SINGLE_WAIT:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_clicked(button, MISCLICK_CLICK_SINGLE, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_DOUBLE:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
+        case MISCLICK_PHASE_PRESSED:
+          if (button->count == 1) {
+            // the first press is long: the gesture may go on
+            button->phase = MISCLICK_PHASE_PRESSED_LONG;
+            button->long_first = 1;
+            button->click_tick = cur_time + misclick_config.final_press_time_us;
+            misclick_pressed(button, MISCLICK_LONG_PRESS_START, cur_time);
+            break;
+          }
+          // a later press held long enough ends the gesture
+          // fallthrough
+        case MISCLICK_PHASE_PRESSED_LONG:
           misclick_pressed(button, MISCLICK_FINAL_PRESS, cur_time);
-          misclick_clicked(button, MISCLICK_CLICK_DOUBLE, cur_time);
+          misclick_end(button, misclick_gesture(button), cur_time);
           break;
-        case MISCLICK_CLICK_STATE_DOUBLE_WAIT:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_clicked(button, MISCLICK_CLICK_DOUBLE, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_TRIPLE:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_pressed(button, MISCLICK_FINAL_PRESS, cur_time);
-          misclick_clicked(button, MISCLICK_CLICK_TRIPLE, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_TRIPLE_WAIT:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_clicked(button, MISCLICK_CLICK_TRIPLE, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_LONG:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_pressed(button, MISCLICK_FINAL_PRESS, cur_time);
-          misclick_clicked(button, MISCLICK_CLICK_LONG, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_LONG_WAIT:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_clicked(button, MISCLICK_CLICK_LONG, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_LONG_DOUBLE:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_pressed(button, MISCLICK_FINAL_PRESS, cur_time);
-          misclick_clicked(button, MISCLICK_CLICK_LONG_DOUBLE, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_LONG_DOUBLE_WAIT:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_clicked(button, MISCLICK_CLICK_LONG_DOUBLE, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_LONG_TRIPLE:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN_PRESSED;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_pressed(button, MISCLICK_FINAL_PRESS, cur_time);
-          misclick_clicked(button, MISCLICK_CLICK_LONG_TRIPLE, cur_time);
-          break;
-        case MISCLICK_CLICK_STATE_LONG_TRIPLE_WAIT:
-          button->click = MISCLICK_CLICK_STATE_COOLDOWN;
-          button->click_tick = cur_time + misclick_config.cooldown_time_us;
-          misclick_clicked(button, MISCLICK_CLICK_LONG_TRIPLE, cur_time);
+        case MISCLICK_PHASE_WAIT:
+          misclick_end(button, misclick_gesture(button), cur_time);
           break;
       }
     }
@@ -404,14 +229,12 @@ struct misclick_t *misclick_add(const struct misclick_params_t *params)
   }
   button->params = *params;
   button->state = 1;
-  button->click = MISCLICK_CLICK_STATE_NONE;
+  button->phase = MISCLICK_PHASE_NONE;
   button->state_tick = INT64_MAX;
   button->click_tick = INT64_MAX;
-  button->first_click_ts = 0;
-  button->second_click_ts = 0;
   button->next = misclick_head;
   misclick_head = button;
-  
+
   return button;
 }
 

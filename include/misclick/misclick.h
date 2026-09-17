@@ -1,6 +1,8 @@
 #ifndef __MISCLICK_H__
 #define __MISCLICK_H__
 
+#include <stdint.h>
+
 struct misclick_t;
 
 #define DEFAULT_MISCLICK_DEBOUNCE_TIME_US      40000
@@ -23,14 +25,22 @@ enum misclick_press_t {
   MISCLICK_FINAL_PRESS,
 };
 
+/* A click value describes a whole gesture and is composed of bit fields:
+ *   bits 0-1  number of presses in the gesture (1..3)
+ *   bit  2    the first press was long
+ * MISCLICK_CLICK_CANCELLED (0) is the only value with a zero press count.
+ * The named constants below cover every combination the library reports. */
 enum misclick_click_t {
-  MISCLICK_CLICK_SINGLE,
-  MISCLICK_CLICK_DOUBLE,
-  MISCLICK_CLICK_TRIPLE,
-  MISCLICK_CLICK_LONG,
-  MISCLICK_CLICK_LONG_DOUBLE,
-  MISCLICK_CLICK_LONG_TRIPLE,
-  MISCLICK_CLICK_CANCELLED,
+  MISCLICK_CLICK_CANCELLED    = 0,
+  MISCLICK_CLICK_COUNT_MASK   = 0x03,
+  MISCLICK_CLICK_LONG_FIRST   = 0x04,
+
+  MISCLICK_CLICK_SINGLE       = 1,
+  MISCLICK_CLICK_DOUBLE       = 2,
+  MISCLICK_CLICK_TRIPLE       = 3,
+  MISCLICK_CLICK_LONG         = MISCLICK_CLICK_LONG_FIRST | 1,
+  MISCLICK_CLICK_LONG_DOUBLE  = MISCLICK_CLICK_LONG_FIRST | 2,
+  MISCLICK_CLICK_LONG_TRIPLE  = MISCLICK_CLICK_LONG_FIRST | 3,
 };
 
 typedef void (*misclick_click_callback_t)(void *callback_arg, int button, enum misclick_click_t click, int64_t timestamp);
