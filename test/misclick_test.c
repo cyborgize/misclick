@@ -2,7 +2,8 @@
  *
  * An input script is a list of tokens separated by spaces. A number toggles
  * the button (starting from released) and advances time by that many
- * milliseconds. The expected trace lists "<ms> <event>" entries separated by ";". */
+ * milliseconds; "k<id>" feeds custom event <id> at the current time.
+ * The expected trace lists "<ms> <event>" entries separated by ";". */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,11 +32,16 @@ static const char *press_name(enum misclick_press_t p) {
 }
 
 static void click_name(enum misclick_click_t c, char *buf) {
-  static const char *base[] = {"CANCELLED", "SINGLE", "DOUBLE", "TRIPLE", "?", "LONG", "LONG_DOUBLE", "LONG_TRIPLE"};
+  static const char *base[] = {"NONE", "SINGLE", "DOUBLE", "TRIPLE", "?", "LONG", "LONG_DOUBLE", "LONG_TRIPLE"};
+  if (c == MISCLICK_CLICK_CANCELLED) {
+    strcpy(buf, "CANCELLED");
+    return;
+  }
   strcpy(buf, base[c & (MISCLICK_CLICK_COUNT_MASK | MISCLICK_CLICK_LONG_FIRST)]);
   switch (c & MISCLICK_CLICK_END_MASK) {
     case MISCLICK_CLICK_END_LONG: strcat(buf, "+END_LONG"); break;
     case MISCLICK_CLICK_END_VERY_LONG: strcat(buf, "+END_VERY_LONG"); break;
+    case MISCLICK_CLICK_END_CUSTOM: sprintf(buf + strlen(buf), "+CUSTOM(%u)", MISCLICK_CLICK_CUSTOM_EVENT(c)); break;
   }
 }
 
@@ -103,9 +109,17 @@ static int run(const struct scenario *sc) {
   strcpy(script, sc->input);
   int sample = 1;
   for (char *tok = strtok(script, " "); tok; tok = strtok(NULL, " ")) {
-    sample = !sample;
-    misclick_handle_input_event(button, sample, now);
-    run_timers_until(now + atoll(tok) * 1000);
+    if (tok[0] == 'k') {
+      unsigned id = atoi(tok + 1);
+      char buf[32];
+      sprintf(buf, "CUSTOM(%u)", id);
+      emit(buf);
+      misclick_handle_custom_event(button, id, now);
+    } else {
+      sample = !sample;
+      misclick_handle_input_event(button, sample, now);
+      run_timers_until(now + atoll(tok) * 1000);
+    }
   }
   if (!sample) {
     misclick_handle_input_event(button, 1, now);
@@ -168,6 +182,25 @@ static const struct scenario scenarios[] = {
    "0 DOWN_START;600 LONG_PRESS_START;800 UP;1000 DOWN;1600 LONG_PRESS_START;4000 VERY_LONG_PRESS_START;5500 UP;5500 LONG_DOUBLE+END_VERY_LONG;6500 COOLDOWN_COMPLETE"},
   {"long double click, very long enabled", -1, -1, 3000000, "800 200 100",
    "0 DOWN_START;600 LONG_PRESS_START;800 UP;1000 DOWN;1100 UP;1600 LONG_DOUBLE;2600 COOLDOWN_COMPLETE"},
+  /* custom events */
+  {"click then knock", -1, -1, 0, "100 200 k7",
+   "0 DOWN_START;100 UP;300 CUSTOM(7);300 SINGLE+CUSTOM(7);1300 COOLDOWN_COMPLETE"},
+  {"double click then knock", -1, -1, 0, "100 200 100 200 k7",
+   "0 DOWN_START;100 UP;300 DOWN;400 UP;600 CUSTOM(7);600 DOUBLE+CUSTOM(7);1600 COOLDOWN_COMPLETE"},
+  {"long click then knock", -1, -1, 0, "800 200 k3",
+   "0 DOWN_START;600 LONG_PRESS_START;800 UP;1000 CUSTOM(3);1000 LONG+CUSTOM(3);2000 COOLDOWN_COMPLETE"},
+  {"knock alone", -1, -1, 0, "k7",
+   "0 CUSTOM(7);0 NONE+CUSTOM(7);1000 COOLDOWN_COMPLETE"},
+  {"knock then click", -1, -1, 0, "k7 300 100",
+   "0 CUSTOM(7);0 NONE+CUSTOM(7);0 COOLDOWN_DOWN;300 COOLDOWN_UP;1000 COOLDOWN_COMPLETE"},
+  {"knock during and after cooldown", -1, -1, 0, "100 200 100 1100 k7 200 400 k7",
+   "0 DOWN_START;100 UP;300 DOWN;400 UP;900 DOUBLE;1500 CUSTOM(7);1500 COOLDOWN_DOWN;1700 COOLDOWN_UP;1900 COOLDOWN_COMPLETE;2100 CUSTOM(7);2100 NONE+CUSTOM(7);3100 COOLDOWN_COMPLETE"},
+  {"knock while pressed", -1, -1, 0, "100 k7 100",
+   "0 DOWN_START;100 CUSTOM(7);100 UP;600 SINGLE;1600 COOLDOWN_COMPLETE"},
+  {"knock too late", -1, -1, 0, "100 600 k7",
+   "0 DOWN_START;100 UP;600 SINGLE;700 CUSTOM(7);1600 COOLDOWN_COMPLETE"},
+  {"click during cooldown after knock", -1, -1, 0, "100 200 k7 100 100",
+   "0 DOWN_START;100 UP;300 CUSTOM(7);300 SINGLE+CUSTOM(7);300 COOLDOWN_DOWN;400 COOLDOWN_UP;1300 COOLDOWN_COMPLETE"},
   /* early report of held gestures */
   {"long press held, early", -1, 500000, 0, "2000",
    "0 DOWN_START;600 LONG_PRESS_START;1100 LONG+END_LONG;2000 COOLDOWN_UP;2100 COOLDOWN_COMPLETE"},

@@ -30,7 +30,9 @@ enum misclick_press_t {
  *   bits 0-1  number of presses in the gesture (1..3)
  *   bit  2    the first press was long
  *   bits 3-4  how the gesture ended
- * MISCLICK_CLICK_CANCELLED (0) is the only value with a zero press count.
+ *   bits 5+   the custom event id, when ended by a custom event
+ * A zero press count means MISCLICK_CLICK_CANCELLED (0) or a standalone
+ * custom event.
  *
  * A gesture is reported after its last press is released: either when no
  * further press follows within next_press_time_us
@@ -43,7 +45,13 @@ enum misclick_press_t {
  * a held gesture is reported before the release, see misclick_config_t.
  *
  * With very_long_press_time_us unset (0), a very long press is the same as
- * a long press and END_VERY_LONG is never reported. */
+ * a long press and END_VERY_LONG is never reported.
+ *
+ * A gesture waiting for the next press can also be ended by a custom event
+ * supplied by the caller through misclick_handle_custom_event(), e.g. a
+ * knock or a motion detected by other means; the click value then carries
+ * MISCLICK_CLICK_END_CUSTOM and the event id. A custom event on its own is
+ * a gesture with no presses. */
 enum misclick_click_t {
   MISCLICK_CLICK_CANCELLED    = 0,
   MISCLICK_CLICK_COUNT_MASK   = 0x03,
@@ -52,6 +60,8 @@ enum misclick_click_t {
   MISCLICK_CLICK_END_RELEASE  = 0x00,
   MISCLICK_CLICK_END_LONG     = 0x08,
   MISCLICK_CLICK_END_VERY_LONG = 0x10,
+  MISCLICK_CLICK_END_CUSTOM   = 0x18,
+  MISCLICK_CLICK_CUSTOM_SHIFT = 5,
 
   MISCLICK_CLICK_SINGLE       = 1,
   MISCLICK_CLICK_DOUBLE       = 2,
@@ -67,6 +77,14 @@ enum misclick_click_t {
   MISCLICK_CLICK_SINGLE_VERY_LONG = MISCLICK_CLICK_END_VERY_LONG | 2,
   MISCLICK_CLICK_DOUBLE_VERY_LONG = MISCLICK_CLICK_END_VERY_LONG | 3,
 };
+
+/* The click value of a gesture ended by custom event <event>, e.g.
+ * MISCLICK_CLICK_CUSTOM(MISCLICK_CLICK_SINGLE, KNOCK) for click-then-knock
+ * and MISCLICK_CLICK_CUSTOM(0, KNOCK) for a knock on its own. */
+#define MISCLICK_CLICK_CUSTOM(click, event) \
+  ((enum misclick_click_t)((click) | MISCLICK_CLICK_END_CUSTOM | ((event) << MISCLICK_CLICK_CUSTOM_SHIFT)))
+/* The custom event id of a click value with MISCLICK_CLICK_END_CUSTOM. */
+#define MISCLICK_CLICK_CUSTOM_EVENT(click) ((unsigned)(click) >> MISCLICK_CLICK_CUSTOM_SHIFT)
 
 typedef void (*misclick_click_callback_t)(void *callback_arg, int button, enum misclick_click_t click, int64_t timestamp);
 typedef void (*misclick_press_callback_t)(void *callback_arg, int button, enum misclick_press_t press, int64_t timestamp);
@@ -110,6 +128,12 @@ struct misclick_t *misclick_add(const struct misclick_params_t *params);
 void misclick_handle_input_event(struct misclick_t *button, uint8_t sample, int64_t cur_time);
 void misclick_handle_state_timeout(int64_t cur_time);
 void misclick_handle_click_timeout(int64_t cur_time);
+/* Feed a caller-defined event into the gesture detection. When the button
+ * is idle or waiting for its next press, the event completes a gesture and
+ * the click callback is invoked with MISCLICK_CLICK_END_CUSTOM, followed by
+ * the usual cooldown. Like a press, the event is ignored during cooldown;
+ * it is also ignored while the button is held. */
+void misclick_handle_custom_event(struct misclick_t *button, unsigned event, int64_t cur_time);
 void misclick_deinit();
 
 #endif // __MISCLICK_H__

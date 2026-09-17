@@ -81,6 +81,8 @@ static void misclick_end(struct misclick_t *button, enum misclick_click_t click,
 {
   button->phase = button->state ? MISCLICK_PHASE_COOLDOWN : MISCLICK_PHASE_COOLDOWN_PRESSED;
   button->click_tick = cur_time + misclick_config.cooldown_time_us;
+  button->count = 0;
+  button->long_first = 0;
   if (button->params.click_callback) {
     button->params.click_callback(button->params.callback_arg, button->params.button_id, click, cur_time);
   }
@@ -117,8 +119,6 @@ static void misclick_state_changed(struct misclick_t *button, int64_t cur_time)
       // button press = gesture start
       assert(!button->state);
       misclick_pressed(button, MISCLICK_DOWN_START, cur_time);
-      button->count = 0;
-      button->long_first = 0;
       misclick_press(button, cur_time);
       break;
     case MISCLICK_PHASE_PRESSED:
@@ -258,6 +258,8 @@ struct misclick_t *misclick_add(const struct misclick_params_t *params)
   button->params = *params;
   button->state = 1;
   button->phase = MISCLICK_PHASE_NONE;
+  button->count = 0;
+  button->long_first = 0;
   button->state_tick = INT64_MAX;
   button->click_tick = INT64_MAX;
   button->next = misclick_head;
@@ -272,6 +274,21 @@ void misclick_handle_input_event(struct misclick_t *button, uint8_t sample, int6
   int64_t debounce = db > 0 ? db : (db < 0 ? 0 : misclick_config.debounce_time_us);
   button->state_tick = sample != button->state ? cur_time + debounce : INT64_MAX;
   misclick_reschedule_state_timer(cur_time);
+}
+
+void misclick_handle_custom_event(struct misclick_t *button, unsigned event, int64_t cur_time)
+{
+  switch (button->phase) {
+    case MISCLICK_PHASE_NONE:
+    case MISCLICK_PHASE_WAIT:
+      // a gesture of its own, or the end of the gesture in progress
+      misclick_end(button, MISCLICK_CLICK_CUSTOM(misclick_gesture(button), event), cur_time);
+      misclick_reschedule_click_timer(cur_time);
+      break;
+    default:
+      // ignored while pressed and during cooldown
+      break;
+  }
 }
 
 void misclick_deinit()

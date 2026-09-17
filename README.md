@@ -7,6 +7,7 @@ A lightweight C library for microcontroller button input debouncing and advanced
 - **Hardware debouncing** - Filters out electrical noise from button presses
 - **Multiple click patterns** - Detects single, double, triple clicks
 - **Long press support** - Recognizes long presses, long multi-clicks and clicks ending with a long or very long press
+- **Custom gesture endings** - Combines clicks with events detected by the caller (a knock, a motion pattern, ...)
 - **Configurable timing** - Customizable debounce, press, and cooldown intervals
 - **Callback-based** - Non-blocking event-driven architecture
 - **Memory efficient** - Low memory footprint
@@ -23,6 +24,7 @@ is complete, as an `enum misclick_click_t` value:
 | Long press, optionally followed by one or two clicks | `MISCLICK_CLICK_LONG`, `_LONG_DOUBLE`, `_LONG_TRIPLE` |
 | One or two clicks followed by a long press | `MISCLICK_CLICK_SINGLE_LONG`, `_DOUBLE_LONG` |
 | Zero to two clicks followed by a very long press | `MISCLICK_CLICK_VERY_LONG`, `_SINGLE_VERY_LONG`, `_DOUBLE_VERY_LONG` |
+| Zero to three clicks followed by a custom event | `MISCLICK_CLICK_CUSTOM(0, event)`, `MISCLICK_CLICK_CUSTOM(MISCLICK_CLICK_SINGLE, event)`, ... |
 | More than three presses | `MISCLICK_CLICK_CANCELLED` |
 
 A click value is composed of bit fields, so callbacks can also inspect a
@@ -32,7 +34,8 @@ gesture by parts instead of matching whole values:
 |---|---|---|
 | bits 0-1 | `MISCLICK_CLICK_COUNT_MASK` | Number of presses (1..3) |
 | bit 2 | `MISCLICK_CLICK_LONG_FIRST` | The first press was long |
-| bits 3-4 | `MISCLICK_CLICK_END_MASK` | How it ended: `MISCLICK_CLICK_END_RELEASE`, `_END_LONG`, `_END_VERY_LONG` |
+| bits 3-4 | `MISCLICK_CLICK_END_MASK` | How it ended: `MISCLICK_CLICK_END_RELEASE`, `_END_LONG`, `_END_VERY_LONG`, `_END_CUSTOM` |
+| bits 5+ | `MISCLICK_CLICK_CUSTOM_EVENT(click)` | The custom event id, with `_END_CUSTOM` |
 
 A press held for `long_press_time_us` is long, and one held for
 `very_long_press_time_us` is very long. A long *first* press does not end the
@@ -102,6 +105,8 @@ static void misclick_start_timer(void *handle, int64_t timeout_us) {
 ### 2. Button Event Callbacks
 
 ```c
+#define KNOCK_EVENT 1  // custom event id, see step 5
+
 // Handle different click patterns
 static void button_click_callback(void *callback_arg, int button_id,
                                   enum misclick_click_t click, int64_t timestamp) {
@@ -133,6 +138,12 @@ static void button_click_callback(void *callback_arg, int button_id,
             break;
         case MISCLICK_CLICK_VERY_LONG:
             printk("Very long press detected\\n");
+            break;
+        case MISCLICK_CLICK_CUSTOM(0, KNOCK_EVENT):
+            printk("Knock detected\\n");
+            break;
+        case MISCLICK_CLICK_CUSTOM(MISCLICK_CLICK_SINGLE, KNOCK_EVENT):
+            printk("Click then knock detected\\n");
             break;
         case MISCLICK_CLICK_CANCELLED:
             printk("Click sequence cancelled\\n");
@@ -210,7 +221,19 @@ static void button_gpio_callback(const struct device *dev,
 }
 ```
 
-### 5. Main Application Setup
+### 5. Custom Gesture Endings (optional)
+
+Events detected by other means, such as a knock from an accelerometer, are
+gestures too: on their own, or ending a click sequence. Like presses, they are
+ignored during the cooldown after a gesture, and also while the button is held.
+
+```c
+static void knock_detected(void) {
+    misclick_handle_custom_event(main_button, KNOCK_EVENT, k_uptime_get() * 1000);
+}
+```
+
+### 6. Main Application Setup
 
 ```c
 int main(void) {
@@ -257,7 +280,7 @@ int main(void) {
 - `long_press_time_us` - hold time for a press to count as long, in any position of the gesture
 - `very_long_press_time_us` - hold time, from the start of the press, for a very long press; must exceed `long_press_time_us`; 0 disables very long presses (a very long press is then the same as a long press)
 - `final_press_time_us` - once a held press can no longer change the gesture (long, or very long when enabled), report the gesture without waiting for the release: at once (0) or after this much more hold (> 0); negative waits for the release
-- `next_press_time_us` - maximum gap between a release and the next press of the same gesture
+- `next_press_time_us` - maximum gap between a release and the next press (or custom event) of the same gesture
 - `cooldown_time_us` - presses are ignored for this long after a gesture
 
 ### Timer Integration
