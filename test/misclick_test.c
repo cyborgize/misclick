@@ -12,6 +12,7 @@
 #include "misclick/misclick.h"
 
 static int64_t now;
+static int64_t press_timestamp;
 struct timer { int64_t deadline; };
 static struct timer state_timer, click_timer;
 static void stop_timer(void *h) { ((struct timer *)h)->deadline = INT64_MAX; }
@@ -52,6 +53,7 @@ static void on_click(void *arg, int button, enum misclick_click_t click, int64_t
 }
 static void on_press(void *arg, int button, enum misclick_press_t press, int64_t ts) {
   (void)arg; (void)button; (void)ts;
+  if (press == MISCLICK_DOWN_START || press == MISCLICK_DOWN) press_timestamp = ts;
   emit(press_name(press));
 }
 
@@ -109,7 +111,17 @@ static int run(const struct scenario *sc) {
   strcpy(script, sc->input);
   int sample = 1;
   for (char *tok = strtok(script, " "); tok; tok = strtok(NULL, " ")) {
-    if (tok[0] == 'k') {
+    if (tok[0] == 'w') {
+      run_timers_until(now + atoll(tok + 1) * 1000);
+    } else if (tok[0] == 'h' || tok[0] == 's') {
+      unsigned id = atoi(tok + 1);
+      char buf[32];
+      sprintf(buf, "FINISH(%u)", id);
+      emit(buf);
+      bool done = misclick_finish_held_gesture(button, id,
+          tok[0] == 's' ? press_timestamp - 1 : press_timestamp, now);
+      emit(done ? "ACCEPTED" : "IGNORED");
+    } else if (tok[0] == 'k') {
       unsigned id = atoi(tok + 1);
       char buf[32];
       sprintf(buf, "CUSTOM(%u)", id);
@@ -201,6 +213,29 @@ static const struct scenario scenarios[] = {
    "0 DOWN_START;100 UP;600 SINGLE;700 CUSTOM(7);1600 COOLDOWN_COMPLETE"},
   {"click during cooldown after knock", -1, -1, 0, "100 200 k7 100 100",
    "0 DOWN_START;100 UP;300 CUSTOM(7);300 SINGLE+CUSTOM(7);300 COOLDOWN_DOWN;400 COOLDOWN_UP;1300 COOLDOWN_COMPLETE"},
+  /* Explicit completion is distinct from ordinary custom events. */
+  {"complete held press", -1, -1, 0, "5000 h1",
+   "0 DOWN_START;600 LONG_PRESS_START;5000 FINISH(1);5000 LONG+CUSTOM(1);5000 ACCEPTED;5000 COOLDOWN_UP;6000 COOLDOWN_COMPLETE"},
+  {"complete short hold", -1, -1, 0, "100 h1",
+   "0 DOWN_START;100 FINISH(1);100 SINGLE+CUSTOM(1);100 ACCEPTED;100 COOLDOWN_UP;1100 COOLDOWN_COMPLETE"},
+  {"complete very long hold", -1, -1, 5000000, "10000 h2",
+   "0 DOWN_START;600 LONG_PRESS_START;5000 VERY_LONG_PRESS_START;10000 FINISH(2);10000 LONG+CUSTOM(2);10000 ACCEPTED;10000 COOLDOWN_UP;11000 COOLDOWN_COMPLETE"},
+  {"finish released gesture ignored", -1, -1, 0, "800 100 h1",
+   "0 DOWN_START;600 LONG_PRESS_START;800 UP;900 FINISH(1);900 IGNORED;1300 LONG;2300 COOLDOWN_COMPLETE"},
+  {"stale completion ignored", -1, -1, 0, "800 100 100 s1",
+   "0 DOWN_START;600 LONG_PRESS_START;800 UP;900 DOWN;1000 FINISH(1);1000 IGNORED;1000 UP;1500 LONG_DOUBLE;2500 COOLDOWN_COMPLETE"},
+  {"repeated completion ignored", -1, -1, 0, "5000 h1 h2",
+   "0 DOWN_START;600 LONG_PRESS_START;5000 FINISH(1);5000 LONG+CUSTOM(1);5000 ACCEPTED;5000 FINISH(2);5000 IGNORED;5000 COOLDOWN_UP;6000 COOLDOWN_COMPLETE"},
+  {"finish idle gesture ignored", -1, -1, 0, "h1",
+   "0 FINISH(1);0 IGNORED"},
+  {"completion during debounce ignored", 40000, -1, 0, "20 h1",
+   "20 FINISH(1);20 IGNORED"},
+  {"completed hold survives cooldown and ignores repeat", -1, -1, 0, "5000 h1 w2000 h2",
+   "0 DOWN_START;600 LONG_PRESS_START;5000 FINISH(1);5000 LONG+CUSTOM(1);5000 ACCEPTED;6000 COOLDOWN_PRESSED_COMPLETE;7000 FINISH(2);7000 IGNORED;7000 IGNORE_UP"},
+  {"fresh click after completed hold", -1, -1, 0, "5000 h1 w2000 100 100",
+   "0 DOWN_START;600 LONG_PRESS_START;5000 FINISH(1);5000 LONG+CUSTOM(1);5000 ACCEPTED;6000 COOLDOWN_PRESSED_COMPLETE;7000 IGNORE_UP;7100 DOWN_START;7200 UP;7700 SINGLE;8700 COOLDOWN_COMPLETE"},
+  {"complete multi-press hold", -1, -1, 0, "800 100 700 h3",
+   "0 DOWN_START;600 LONG_PRESS_START;800 UP;900 DOWN;1500 LONG_PRESS_START;1600 FINISH(3);1600 LONG_DOUBLE+CUSTOM(3);1600 ACCEPTED;1600 COOLDOWN_UP;2600 COOLDOWN_COMPLETE"},
   /* early report of held gestures */
   {"long press held, early", -1, 500000, 0, "2000",
    "0 DOWN_START;600 LONG_PRESS_START;1100 LONG+END_LONG;2000 COOLDOWN_UP;2100 COOLDOWN_COMPLETE"},

@@ -2,6 +2,7 @@
 #define __MISCLICK_H__
 
 #include <stdint.h>
+#include <stdbool.h>
 
 struct misclick_t;
 
@@ -134,6 +135,15 @@ void misclick_handle_click_timeout(int64_t cur_time);
  * the usual cooldown. Like a press, the event is ignored during cooldown;
  * it is also ignored while the button is held. */
 void misclick_handle_custom_event(struct misclick_t *button, unsigned event, int64_t cur_time);
+/* End the currently held gesture with a custom event, entering cooldown.
+ * press_timestamp must be the timestamp of its latest DOWN_START/DOWN callback;
+ * a stale timer, released button, or gesture already in cooldown returns false
+ * without emitting anything. Returns true when the click callback was invoked.
+ * Ordinary custom events keep ignoring held buttons. Call this outside library
+ * callbacks, with the same external synchronization as the other entry points.
+ */
+bool misclick_finish_held_gesture(struct misclick_t *button, unsigned event,
+                                 int64_t press_timestamp, int64_t cur_time);
 void misclick_deinit();
 
 #endif // __MISCLICK_H__

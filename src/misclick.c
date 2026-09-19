@@ -291,6 +291,24 @@ void misclick_handle_custom_event(struct misclick_t *button, unsigned event, int
   }
 }
 
+bool misclick_finish_held_gesture(struct misclick_t *button, unsigned event,
+                                 int64_t press_timestamp, int64_t cur_time)
+{
+  switch (button->phase) {
+    case MISCLICK_PHASE_PRESSED:
+    case MISCLICK_PHASE_PRESSED_LONG:
+    case MISCLICK_PHASE_PRESSED_VERY_LONG:
+      if (button->press_ts != press_timestamp) {
+        return false;
+      }
+      misclick_end(button, MISCLICK_CLICK_CUSTOM(misclick_gesture(button), event), cur_time);
+      misclick_reschedule_click_timer(cur_time);
+      return true;
+    default:
+      return false;
+  }
+}
+
 void misclick_deinit()
 {
 }

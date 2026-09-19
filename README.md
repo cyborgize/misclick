@@ -233,6 +233,21 @@ static void knock_detected(void) {
 }
 ```
 
+#### Completing a held gesture from an external timer
+
+For state-dependent system holds, set `final_press_time_us = -1` to keep a
+held gesture unresolved. Save the timestamp supplied with `DOWN_START` or
+`DOWN`, then start your application timer. On expiry call
+`misclick_finish_held_gesture(button, event_id, press_timestamp, now)` outside
+library callbacks, using the same synchronization as other library calls.
+It returns `true` only for that still-active press, emits one custom ending,
+and consumes the trailing release through cooldown. Early release or a stale
+timer returns `false`. Stop the application timer on release.
+
+This does not change `misclick_handle_custom_event`: ordinary events such as
+knocks remain ignored while held. A very-long threshold is optional; with it
+disabled, early release retains the ordinary long/multi-click classification.
+
 ### 6. Main Application Setup
 
 ```c
