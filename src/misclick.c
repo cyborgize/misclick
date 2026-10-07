@@ -22,7 +22,7 @@ struct misclick_t {
   struct misclick_params_t params;
   uint8_t state : 1;
   uint8_t phase : 3;
-  uint8_t count : 2;               // presses so far in the current gesture
+  uint8_t count : 4;               // presses so far in the current gesture, saturating
   uint8_t long_first : 1;          // the first press of the gesture was long
   int64_t state_tick;
   int64_t click_tick;
@@ -99,13 +99,18 @@ static int64_t misclick_final_tick(int64_t cur_time)
 // The gesture so far, as a click value.
 static enum misclick_click_t misclick_gesture(struct misclick_t *button)
 {
+  if (button->count > misclick_config.max_presses) {
+    return MISCLICK_CLICK_MANY;
+  }
   return (button->long_first ? MISCLICK_CLICK_LONG_FIRST : 0) | button->count;
 }
 
 // A new press of the gesture starts.
 static void misclick_press(struct misclick_t *button, int64_t cur_time)
 {
-  button->count++;
+  if (button->count <= MISCLICK_CLICK_COUNT_MASK) {
+    button->count++;
+  }
   button->phase = MISCLICK_PHASE_PRESSED;
   button->press_ts = cur_time;
   button->click_tick = cur_time + misclick_config.long_press_time_us;
@@ -146,14 +151,10 @@ static void misclick_state_changed(struct misclick_t *button, int64_t cur_time)
       button->click_tick = cur_time + misclick_config.next_press_time_us;
       break;
     case MISCLICK_PHASE_WAIT:
-      // button press = next press of the gesture, or too many presses
+      // button press = next press of the gesture
       assert(!button->state);
-      misclick_pressed(button, MISCLICK_DOWN, cur_time);
-      if (button->count == 3) {
-        misclick_end(button, MISCLICK_CLICK_CANCELLED, cur_time);
-      } else {
-        misclick_press(button, cur_time);
-      }
+      misclick_pressed(button, button->count < misclick_config.max_presses ? MISCLICK_DOWN : MISCLICK_MANY_DOWN, cur_time);
+      misclick_press(button, cur_time);
       break;
     case MISCLICK_PHASE_COOLDOWN:
       // button press = ignore
@@ -247,6 +248,11 @@ void misclick_handle_click_timeout(int64_t cur_time)
 void misclick_init(const struct misclick_config_t *config)
 {
   misclick_config = *config;
+  if (misclick_config.max_presses == 0) {
+    misclick_config.max_presses = DEFAULT_MISCLICK_MAX_PRESSES;
+  } else if (misclick_config.max_presses > MISCLICK_CLICK_COUNT_MASK) {
+    misclick_config.max_presses = MISCLICK_CLICK_COUNT_MASK;
+  }
 }
 
 struct misclick_t *misclick_add(const struct misclick_params_t *params)

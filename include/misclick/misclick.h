@@ -12,6 +12,7 @@ struct misclick_t;
 #define DEFAULT_MISCLICK_FINAL_PRESS_TIME_US  500000
 #define DEFAULT_MISCLICK_COOLDOWN_TIME_US    1000000
 #define DEFAULT_MISCLICK_VERY_LONG_PRESS_TIME_US 3000000
+#define DEFAULT_MISCLICK_MAX_PRESSES               3
 
 enum misclick_press_t {
   MISCLICK_DOWN_START,
@@ -25,15 +26,23 @@ enum misclick_press_t {
   MISCLICK_COOLDOWN_PRESSED_COMPLETE,
   MISCLICK_LONG_PRESS_START,
   MISCLICK_VERY_LONG_PRESS_START,
+  MISCLICK_MANY_DOWN,              // a press beyond max_presses, instead of MISCLICK_DOWN
 };
 
 /* A click value describes a whole gesture and is composed of bit fields:
- *   bits 0-1  number of presses in the gesture (1..3)
- *   bit  2    the first press was long
- *   bits 3-4  how the gesture ended
- *   bits 5+   the custom event id, when ended by a custom event
- * A zero press count means MISCLICK_CLICK_CANCELLED (0) or a standalone
- * custom event.
+ *   bits 0-2  number of presses in the gesture (1..max_presses)
+ *   bit  3    the first press was long
+ *   bit  4    more than max_presses presses (the count and long-first
+ *             fields are then zero)
+ *   bits 5-6  how the gesture ended
+ *   bits 7+   the custom event id, when ended by a custom event
+ * A zero press count means a standalone custom event, or many presses.
+ *
+ * A gesture with more presses than max_presses is one the application
+ * does not act on, e.g. a way to cancel a click sequence under way by
+ * clicking on: each press beyond the limit reports MISCLICK_MANY_DOWN,
+ * and the gesture goes on as usual until it is reported as
+ * MISCLICK_CLICK_MANY (with the usual ending bits).
  *
  * A gesture is reported after its last press is released: either when no
  * further press follows within next_press_time_us
@@ -54,15 +63,15 @@ enum misclick_press_t {
  * MISCLICK_CLICK_END_CUSTOM and the event id. A custom event on its own is
  * a gesture with no presses. */
 enum misclick_click_t {
-  MISCLICK_CLICK_CANCELLED    = 0,
-  MISCLICK_CLICK_COUNT_MASK   = 0x03,
-  MISCLICK_CLICK_LONG_FIRST   = 0x04,
-  MISCLICK_CLICK_END_MASK     = 0x18,
+  MISCLICK_CLICK_COUNT_MASK   = 0x07,
+  MISCLICK_CLICK_LONG_FIRST   = 0x08,
+  MISCLICK_CLICK_MANY         = 0x10,
+  MISCLICK_CLICK_END_MASK     = 0x60,
   MISCLICK_CLICK_END_RELEASE  = 0x00,
-  MISCLICK_CLICK_END_LONG     = 0x08,
-  MISCLICK_CLICK_END_VERY_LONG = 0x10,
-  MISCLICK_CLICK_END_CUSTOM   = 0x18,
-  MISCLICK_CLICK_CUSTOM_SHIFT = 5,
+  MISCLICK_CLICK_END_LONG     = 0x20,
+  MISCLICK_CLICK_END_VERY_LONG = 0x40,
+  MISCLICK_CLICK_END_CUSTOM   = 0x60,
+  MISCLICK_CLICK_CUSTOM_SHIFT = 7,
 
   MISCLICK_CLICK_SINGLE       = 1,
   MISCLICK_CLICK_DOUBLE       = 2,
@@ -122,6 +131,9 @@ struct misclick_config_t {
   /* A press held this long (from its start) ends the gesture as a very long
    * press. Must exceed long_press_time_us. 0 disables very long presses. */
   int64_t very_long_press_time_us;
+  /* The most presses a gesture is told apart by, 1..7; beyond that it is
+   * reported as MISCLICK_CLICK_MANY. 0 selects 3. */
+  uint8_t max_presses;
 };
 
 void misclick_init(const struct misclick_config_t *config);

@@ -25,17 +25,18 @@ is complete, as an `enum misclick_click_t` value:
 | One or two clicks followed by a long press | `MISCLICK_CLICK_SINGLE_LONG`, `_DOUBLE_LONG` |
 | Zero to two clicks followed by a very long press | `MISCLICK_CLICK_VERY_LONG`, `_SINGLE_VERY_LONG`, `_DOUBLE_VERY_LONG` |
 | Zero to three clicks followed by a custom event | `MISCLICK_CLICK_CUSTOM(0, event)`, `MISCLICK_CLICK_CUSTOM(MISCLICK_CLICK_SINGLE, event)`, ... |
-| More than three presses | `MISCLICK_CLICK_CANCELLED` |
+| More presses than `max_presses` | `MISCLICK_CLICK_MANY`, with the same endings |
 
 A click value is composed of bit fields, so callbacks can also inspect a
 gesture by parts instead of matching whole values:
 
 | Field | Mask / accessor | Meaning |
 |---|---|---|
-| bits 0-1 | `MISCLICK_CLICK_COUNT_MASK` | Number of presses (1..3) |
-| bit 2 | `MISCLICK_CLICK_LONG_FIRST` | The first press was long |
-| bits 3-4 | `MISCLICK_CLICK_END_MASK` | How it ended: `MISCLICK_CLICK_END_RELEASE`, `_END_LONG`, `_END_VERY_LONG`, `_END_CUSTOM` |
-| bits 5+ | `MISCLICK_CLICK_CUSTOM_EVENT(click)` | The custom event id, with `_END_CUSTOM` |
+| bits 0-2 | `MISCLICK_CLICK_COUNT_MASK` | Number of presses (1..`max_presses`) |
+| bit 3 | `MISCLICK_CLICK_LONG_FIRST` | The first press was long |
+| bit 4 | `MISCLICK_CLICK_MANY` | More than `max_presses` presses; count and long-first are then zero |
+| bits 5-6 | `MISCLICK_CLICK_END_MASK` | How it ended: `MISCLICK_CLICK_END_RELEASE`, `_END_LONG`, `_END_VERY_LONG`, `_END_CUSTOM` |
+| bits 7+ | `MISCLICK_CLICK_CUSTOM_EVENT(click)` | The custom event id, with `_END_CUSTOM` |
 
 A press held for `long_press_time_us` is long, and one held for
 `very_long_press_time_us` is very long. A long *first* press does not end the
@@ -44,6 +45,12 @@ press ends it. Gestures are always reported once the button is released
 (`_END_LONG`, `_END_VERY_LONG`); the press events `MISCLICK_LONG_PRESS_START`
 and `MISCLICK_VERY_LONG_PRESS_START` give early notice while it is still held.
 Set `final_press_time_us` to report held gestures before the release instead.
+
+A gesture with more presses than `max_presses` (3 by default) is reported as
+`MISCLICK_CLICK_MANY` once it ends, and each press beyond the limit reports the
+`MISCLICK_MANY_DOWN` press event in place of `MISCLICK_DOWN`. This gives users
+a way out of a click sequence they did not mean: keep clicking, and the result
+is a gesture the application does not act on.
 
 ## Usage
 
@@ -145,8 +152,8 @@ static void button_click_callback(void *callback_arg, int button_id,
         case MISCLICK_CLICK_CUSTOM(MISCLICK_CLICK_SINGLE, KNOCK_EVENT):
             printk("Click then knock detected\\n");
             break;
-        case MISCLICK_CLICK_CANCELLED:
-            printk("Click sequence cancelled\\n");
+        case MISCLICK_CLICK_MANY:
+            printk("Too many clicks, ignored\\n");
             break;
         default:
             // Or inspect the gesture by parts
@@ -188,6 +195,7 @@ static void init_buttons(void) {
         .final_press_time_us = DEFAULT_MISCLICK_FINAL_PRESS_TIME_US, // <0 reports held gestures on release
         .cooldown_time_us = DEFAULT_MISCLICK_COOLDOWN_TIME_US,
         .very_long_press_time_us = DEFAULT_MISCLICK_VERY_LONG_PRESS_TIME_US, // 0 disables
+        .max_presses = DEFAULT_MISCLICK_MAX_PRESSES,
     };
     misclick_init(&config);
 
@@ -290,6 +298,7 @@ int main(void) {
 #define DEFAULT_MISCLICK_FINAL_PRESS_TIME_US  500000   // report held gestures 500ms early; <0 waits for release
 #define DEFAULT_MISCLICK_COOLDOWN_TIME_US    1000000   // 1s cooldown after complex patterns
 #define DEFAULT_MISCLICK_VERY_LONG_PRESS_TIME_US 3000000 // 3s for a very long press
+#define DEFAULT_MISCLICK_MAX_PRESSES               3     // more presses make a "many" gesture
 ```
 
 - `long_press_time_us` - hold time for a press to count as long, in any position of the gesture
@@ -297,6 +306,7 @@ int main(void) {
 - `final_press_time_us` - once a held press can no longer change the gesture (long, or very long when enabled), report the gesture without waiting for the release: at once (0) or after this much more hold (> 0); negative waits for the release
 - `next_press_time_us` - maximum gap between a release and the next press (or custom event) of the same gesture
 - `cooldown_time_us` - presses are ignored for this long after a gesture
+- `max_presses` - the most presses a gesture is told apart by (1..7); beyond that the gesture is `MISCLICK_CLICK_MANY`; 0 selects 3
 
 ### Timer Integration
 
